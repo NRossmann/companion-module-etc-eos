@@ -286,28 +286,27 @@ describe('ModuleInstance', () => {
 	describe('config validation', () => {
 		test('should have valid IP regex in config fields', () => {
 			const configFields = instance.getConfigFields()
-			const hostField = configFields.find(f => f.id === 'host')
+			const hostField = configFields.find((f) => f.id === 'host')
 			expect(hostField).toBeDefined()
 			expect(hostField.regex).toBeDefined()
 		})
 
 		test('should have valid defaults for numeric fields', () => {
-			const constants = require('./constants.js')
-			const configFields = instance.getConfigFields()
-			
-			const wheelsField = configFields.find(f => f.id === 'wheels_per_cat')
+			const constants = require('./constants.ts')
+
+			const wheelsField = configFields.find((f) => f.id === 'wheels_per_cat')
 			expect(wheelsField.default).toBe(constants.WHEELS_PER_CAT)
-			
-			const groupLabelsField = configFields.find(f => f.id === 'num_group_labels')
+
+			const groupLabelsField = configFields.find((f) => f.id === 'num_group_labels')
 			expect(groupLabelsField.default).toBe(constants.NUM_GROUP_LABELS)
-			
-			const eosPortField = configFields.find(f => f.id === 'eos_port')
+
+			const eosPortField = configFields.find((f) => f.id === 'eos_port')
 			expect(eosPortField.default).toBe(constants.EOS_PORT)
 		})
 
 		test('should have min/max constraints on numeric fields', () => {
 			const configFields = instance.getConfigFields()
-			const portField = configFields.find(f => f.id === 'eos_port')
+			const portField = configFields.find((f) => f.id === 'eos_port')
 			expect(portField.min).toBe(1)
 			expect(portField.max).toBe(65535)
 		})

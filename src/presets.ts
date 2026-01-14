@@ -1,13 +1,13 @@
-const { combineRgb } = require('@companion-module/base')
+import { combineRgb } from '@companion-module/base'
 
-module.exports = function (self) {
+export default function (self: any): void {
 	self.setPresetDefinitions({
 		cue_trigger: {
 			type: 'button',
 			category: 'Cues',
 			name: 'A button to trigger a cue, and feedbacks to show if the cue is active.',
 			style: {
-				text: 'Cue\n#',
+				text: 'Cue\\n#',
 				size: '14',
 				color: combineRgb(255, 255, 255),
 				bgcolor: combineRgb(0, 0, 0),

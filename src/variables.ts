@@ -1,9 +1,9 @@
-const constants = require('./constants.js')
+import * as constants from './constants.js'
+import { ParamMap } from './param_map.js'
+import type { CompanionVariableDefinition } from '@companion-module/base'
 
-const GetVariableDefinitions = function (self) {
-	const { ParamMap } = require('./param_map')
-
-	let variableDefinitions = [
+export function GetVariableDefinitions(self: any): CompanionVariableDefinition[] {
+	let variableDefinitions: CompanionVariableDefinition[] = [
 		{ variableId: 'cue_active_list', name: 'The active cue list number' },
 		{ variableId: 'cue_active_num', name: 'The active cue number' },
 		{ variableId: 'cue_active_label', name: 'The active cue label' },
@@ -68,31 +68,29 @@ const GetVariableDefinitions = function (self) {
 		variableDefinitions.push({ variableId: `softkey_label_${i}`, name: `Soft key ${i}'s label` })
 	}
 
-    // Group Titles '
-    for (let i = 1; i <= constants.NUM_GROUP_LABELS; i++) {
-        variableDefinitions.push({ variableId: `group_label_${i}`, name: `Group ${i}'s label` })
-    }
+	// Group Titles '
+	for (let i = 1; i <= constants.NUM_GROUP_LABELS; i++) {
+		variableDefinitions.push({ variableId: `group_label_${i}`, name: `Group ${i}'s label` })
+	}
 
-    // Macro Labels
-    for (let i = constants.NUM_MACRO_START; i < constants.NUM_MACRO_START + constants.NUM_MACRO_LABELS; i++) {
-        variableDefinitions.push({ variableId: `macro_label_${i}`, name: `Macro ${i}'s label` })
-    }
+	// Macro Labels
+	for (let i = constants.NUM_MACRO_START; i < constants.NUM_MACRO_START + constants.NUM_MACRO_LABELS; i++) {
+		variableDefinitions.push({ variableId: `macro_label_${i}`, name: `Macro ${i}'s label` })
+	}
 
-    // '
-	return variableDefinitions;
+	// '
+	return variableDefinitions
 }
 
-const UpdateVariableDefinitions = function (self) {
+export function UpdateVariableDefinitions(self: any): void {
 	let variableDefinitions = GetVariableDefinitions(self)
 
 	self.setVariableDefinitions(variableDefinitions)
 
-	const variableValues = {}
+	const variableValues: Record<string, string> = {}
 	// Initialize the default values for the variables
 	for (let i = 0; i < variableDefinitions.length; i++) {
 		variableValues[variableDefinitions[i].variableId] = ''
 	}
 	self.setVariableValues(variableValues)
 }
-
-module.exports = { GetVariableDefinitions, UpdateVariableDefinitions }

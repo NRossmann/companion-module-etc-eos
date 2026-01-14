@@ -1,18 +1,68 @@
-const { InstanceBase, Regex, runEntrypoint, InstanceStatus } = require('@companion-module/base')
-const UpgradeScripts = require('./upgrades')
-const UpdateActions = require('./actions')
-const UpdateFeedbacks = require('./feedbacks')
-const { GetVariableDefinitions, UpdateVariableDefinitions } = require('./variables')
-const UpdatePresetDefinitions = require('./presets')
-const { ParamMap } = require('./param_map')
-const constants = require('./constants.js')
+import { InstanceBase, Regex, runEntrypoint, InstanceStatus } from '@companion-module/base'
+import UpgradeScripts from './upgrades.js'
+import UpdateActions from './actions.js'
+import UpdateFeedbacks from './feedbacks.js'
+import { GetVariableDefinitions, UpdateVariableDefinitions } from './variables.js'
+import UpdatePresetDefinitions from './presets.js'
+import { ParamMap } from './param_map.js'
+import * as constants from './constants.js'
+// @ts-ignore - no types available for osc
+import OSC from 'osc'
 
-class ModuleInstance extends InstanceBase {
-	constructor(internal) {
+interface ModuleConfig {
+	host?: string
+	user_id?: string
+	eos_port?: number
+	eos_port_slip?: number
+	num_group_labels?: number
+	num_macro_labels?: number
+	num_macro_start?: number
+	wheels_per_cat?: number
+	num_softkeys?: number
+}
+
+interface ConnectionMode {
+	port: number
+	useSlip: boolean
+	label: string
+}
+
+interface WheelData {
+	label: string
+	stringval: string
+	cat: string | number
+	floatval: string | number
+}
+
+class ModuleInstance extends InstanceBase<ModuleConfig> {
+	config!: ModuleConfig
+	instanceState: Record<string, any> = {}
+	debugToLogger: boolean = true
+	lastActChan: number = -1
+	connectionModes: ConnectionMode[] = []
+	currentModeIndex: number = 0
+	eos_port: number = 0
+	use_slip: boolean = false
+	readingWheels: boolean = false
+	howManyGroupLabels: number = 0
+	howManyMacroLabels: number = 0
+	startMacro: number = 0
+	wpc: number = 0
+	wheelsPerCategory: number = 0
+	wheels: WheelData[] = []
+	lastMessageReceived: number = 0
+	heartbeatInterval: NodeJS.Timeout | undefined
+	heartbeatTimeout: number = 30000
+	oscSocket: any
+	reconnectTimer: NodeJS.Timeout | undefined
+	failedConnectionAttempts: number = 0
+	lastConnectionAttemptTime: number = 0
+
+	constructor(internal: any) {
 		super(internal)
 	}
 
-	async init(config) {
+	async init(config: ModuleConfig): Promise<void> {
 		this.config = config
 
 		this.updateStatus(InstanceStatus.Disconnected)
@@ -35,8 +85,8 @@ class ModuleInstance extends InstanceBase {
 		this.use_slip = this.connectionModes[0].useSlip
 		this.readingWheels = false
 
-        // how many groups to get labels for
-        this.howManyGroupLabels = this.config.num_group_labels || constants.NUM_GROUP_LABELS
+		// how many groups to get labels for
+		this.howManyGroupLabels = this.config.num_group_labels || constants.NUM_GROUP_LABELS
 		this.howManyMacroLabels = this.config.num_macro_labels || constants.NUM_MACRO_LABELS
 		this.startMacro = this.config.num_macro_start || constants.NUM_MACRO_START
 
@@ -53,9 +103,9 @@ class ModuleInstance extends InstanceBase {
 		this.updatePresets() // export presets
 
 		this.lastMessageReceived = Date.now()
-		this.heartbeatInterval = null
+		this.heartbeatInterval = undefined
 		this.heartbeatTimeout = 30000 // 30 seconds without message = disconnect
-		
+
 		this.oscSocket = this.getOsc10Socket(this.config.host, this.eos_port)
 		this.setOscSocketListeners()
 		this.startReconnectTimer()
@@ -63,28 +113,29 @@ class ModuleInstance extends InstanceBase {
 	}
 
 	// Empty wheel data
-	emptyWheelData() {
+	emptyWheelData(): void {
 		for (let i = 1; i <= 100; i++) {
-			this.wheels[i] = {}
-			this.wheels[i].label = ''
-			this.wheels[i].stringval = ''
-			this.wheels[i].cat = ''
-			this.wheels[i].floatval = ''
+			this.wheels[i] = {
+				label: '',
+				stringval: '',
+				cat: '',
+				floatval: '',
+			}
 		}
 	}
 
 	// When module gets deleted
-	async destroy() {
+	async destroy(): Promise<void> {
 		// Clear the reconnect timer if it exists.
 		if (this.reconnectTimer !== undefined) {
 			clearInterval(this.reconnectTimer)
-			delete this.reconnectTimer
+			this.reconnectTimer = undefined
 		}
 
 		// Clear the heartbeat timer if it exists.
 		if (this.heartbeatInterval !== undefined) {
 			clearInterval(this.heartbeatInterval)
-			delete this.heartbeatInterval
+			this.heartbeatInterval = undefined
 		}
 
 		// Close the socket.
@@ -92,23 +143,20 @@ class ModuleInstance extends InstanceBase {
 		this.log('debug', 'destroy')
 	}
 
-	async configUpdated(config) {
+	async configUpdated(config: ModuleConfig): Promise<void> {
 		let currentHost = this.config.host
 		let currentUserId = this.config.user_id
 
 		this.config = config
 
-		if (
-			currentHost !== this.config.host ||
-			currentUserId !== this.config.user_id
-		) {
+		if (currentHost !== this.config.host || currentUserId !== this.config.user_id) {
 			this.closeOscSocket()
 			await this.init(config)
 		}
 	}
 
 	// Return config fields for web config
-	getConfigFields() {
+	getConfigFields(): any[] {
 		return [
 			{
 				type: 'textinput',
@@ -216,19 +264,19 @@ class ModuleInstance extends InstanceBase {
 		]
 	}
 
-	updateActions() {
+	updateActions(): void {
 		UpdateActions(this)
 	}
 
-	updateFeedbacks() {
+	updateFeedbacks(): void {
 		UpdateFeedbacks(this)
 	}
 
-	updateVariableDefinitions() {
+	updateVariableDefinitions(): void {
 		UpdateVariableDefinitions(this)
 	}
 
-	updatePresets() {
+	updatePresets(): void {
 		UpdatePresetDefinitions(this)
 	}
 
@@ -237,7 +285,7 @@ class ModuleInstance extends InstanceBase {
 	 *
 	 * @param isConnected
 	 */
-	setConnectionState(isConnected) {
+	setConnectionState(isConnected: boolean): void {
 		let currentState = this.instanceState['connected']
 
 		this.updateStatus(isConnected ? InstanceStatus.Ok : InstanceStatus.Disconnected)
@@ -252,7 +300,7 @@ class ModuleInstance extends InstanceBase {
 	/**
 	 * Closes the OSC socket.
 	 */
-	closeOscSocket() {
+	closeOscSocket(): void {
 		if (this.oscSocket !== undefined) {
 			this.oscSocket.close()
 
@@ -271,7 +319,7 @@ class ModuleInstance extends InstanceBase {
 	 * Watches for disconnects and reconnects to the console.
 	 * Automatically detects the correct port and SLIP setting by trying all combinations.
 	 */
-	startReconnectTimer() {
+	startReconnectTimer(): void {
 		if (this.reconnectTimer !== undefined) {
 			// Timer is already running.
 			return
@@ -290,7 +338,7 @@ class ModuleInstance extends InstanceBase {
 			}
 
 			const socketState = this.oscSocket.socket.readyState
-			
+
 			if (socketState === 'open') {
 				// Already connected. Nothing to do.
 				this.failedConnectionAttempts = 0
@@ -309,13 +357,13 @@ class ModuleInstance extends InstanceBase {
 					// Move to next mode in the list
 					this.currentModeIndex = (this.currentModeIndex + 1) % this.connectionModes.length
 					const nextMode = this.connectionModes[this.currentModeIndex]
-					
+
 					this.log('info', `Connection failed, trying: ${nextMode.label}`)
 					this.use_slip = nextMode.useSlip
 					this.eos_port = nextMode.port
 					this.failedConnectionAttempts = 0
 				}
-				
+
 				// Always close old socket and create new one
 				this.log('debug', `Attempting reconnect with: ${this.connectionModes[this.currentModeIndex].label}`)
 				this.closeOscSocket()
@@ -330,7 +378,7 @@ class ModuleInstance extends InstanceBase {
 	 *
 	 * Optionally updates the dynamic variable with its new value.
 	 */
-	setInstanceStates(values, isVariable) {
+	setInstanceStates(values: Record<string, any>, isVariable?: boolean): void {
 		for (const [key, value] of Object.entries(values)) {
 			this.instanceState[key] = value
 		}
@@ -343,10 +391,8 @@ class ModuleInstance extends InstanceBase {
 	/**
 	 * Returns the monkey-patched OSC connection to the console.
 	 */
-	getOsc10Socket(address, port) {
-		let OSC10 = require('osc')
-
-		let oscTcp = new OSC10.TCPSocketPort({
+	getOsc10Socket(address: string | undefined, port: number): any {
+		let oscTcp = new OSC.TCPSocketPort({
 			address: address,
 			port: port,
 			useSLIP: this.use_slip,
@@ -367,8 +413,8 @@ class ModuleInstance extends InstanceBase {
 	 *
 	 * Only needs to be done once, even if the socket reconnects.
 	 */
-	setOscSocketListeners() {
-		this.oscSocket.on('error', (err) => {
+	setOscSocketListeners(): void {
+		this.oscSocket.on('error', (err: Error) => {
 			if (this.instanceState['connected'] === true) {
 				// Only show errors if we're connected, otherwise we'll flood the debug log each time
 				//  the module tries to reconnect to the console.
@@ -393,8 +439,8 @@ class ModuleInstance extends InstanceBase {
 		const chan = '/eos/out/active/chan'
 		const groupUpdated = /^\/eos\/out\/notify\/group\/list\/([\d\.]+)\/([\d\.]+)$/
 		const groupLabel = /^\/eos\/out\/get\/group\/([\d\.]+)\/list\/([\d\.]+)\/([\d\.]+)$/
-        const groupNull = /^\/eos\/out\/get\/group\/([\d\.]+)$/
-        const colorhs = '/eos/out/color/hs'
+		const groupNull = /^\/eos\/out\/get\/group\/([\d\.]+)$/
+		const colorhs = '/eos/out/color/hs'
 		const macroLabel = /^\/eos\/out\/get\/macro\/(\d+)\/list\/(\d+)\/(\d+)$/
 		const macroUpdated = /^\/eos\/out\/notify\/macro\/list\/([\d\.]+)\/([\d\.]+)$/
 		const macroFired = /^\/eos\/out\/event\/macro\/(\d+)$/
@@ -406,10 +452,10 @@ class ModuleInstance extends InstanceBase {
 		// const enc_wheel      = /^\/eos\/out\/active\/wheel\/(\d+),\s*(\w+)\s*\[(\w+)\]\(s\).\s+(\d+)\(i\),\s*([\d.]*)\(f\)$/
 		const enc_wheel = /^\/eos\/out\/active\/wheel\/(\d+)/
 
-		this.oscSocket.on('message', (message, self) => {
+		this.oscSocket.on('message', (message: any, self: any) => {
 			// Update last message timestamp for heartbeat monitoring
 			this.lastMessageReceived = Date.now()
-			
+
 			if (this.debugToLogger) {
 				this.log('debug', `Eos OSC message: ${message.address}`)
 				this.log('debug', `  Eos OSC message args: ${JSON.stringify(message.args)}`)
@@ -532,7 +578,7 @@ class ModuleInstance extends InstanceBase {
 					if (actChan != this.lastActChan) {
 						this.emptyEncVariables()
 						this.requestFullState()
-						this.lastActChan = actChan
+						this.lastActChan = parseInt(actChan)
 					}
 				} else if (this.lastActChan != 0) {
 					// No channel active, clear out encoders, set lastActChan
@@ -541,84 +587,84 @@ class ModuleInstance extends InstanceBase {
 					this.requestFullState()
 					this.lastActChan = 0
 				}
-            } else if ((matches = message.address.match(groupUpdated))) {
-                // A group was updated, request new title
-                // This is not the group number but the index number
-                let group_num = message.args[1].value
-                if (group_num <= this.howManyGroupLabels) {
-                    this.sendOsc('/eos/get/group', [{ type: 'i', value: group_num }], false)
-                }
-            } else if ((matches = message.address.match(macroUpdated))) {
-                // A macro was updated, request new label
-                // Match the OSC address for macro updates
-                let macro_num = message.args[1].value
-                if (macro_num >= this.startMacro && macro_num <= this.howManyMacroLabels+this.startMacro) {
-                    // Send a request to get the updated macro label with no arguments
-                    this.sendOsc('/eos/get/macro', [{ type: 'i', value: macro_num }], false)
-                }
-            } else if ((matches = message.address.match(groupLabel))) {
-                let group_num = matches[1]
-                let group_label = message.args[2].value || ''
-                if (group_label) {
-                    this.setInstanceStates(
-                        {
-                            [`group_label_${group_num}`]: message.args[2].value,
-                        },
-                        true
-                    )
-                }
-            } else if ((matches = message.address.match(macroUpdated))) {
-                // A macro was updated, request new label
-                let macro_num = message.args[1].value
-                if (macro_num <= this.howManyMacroLabels) {
-                    this.sendOsc('/eos/get/macro', [{ type: 'i', value: macro_num }], false)
-                }
-            } else if ((matches = message.address.match(macroLabel))) {
-                let macro_num = matches[1]
-                let macro_label = message.args[2].value || ''
+			} else if ((matches = message.address.match(groupUpdated))) {
+				// A group was updated, request new title
+				// This is not the group number but the index number
+				let group_num = message.args[1].value
+				if (group_num <= this.howManyGroupLabels) {
+					this.sendOsc('/eos/get/group', [{ type: 'i', value: group_num }], false)
+				}
+			} else if ((matches = message.address.match(macroUpdated))) {
+				// A macro was updated, request new label
+				// Match the OSC address for macro updates
+				let macro_num = message.args[1].value
+				if (macro_num >= this.startMacro && macro_num <= this.howManyMacroLabels + this.startMacro) {
+					// Send a request to get the updated macro label with no arguments
+					this.sendOsc('/eos/get/macro', [{ type: 'i', value: macro_num }], false)
+				}
+			} else if ((matches = message.address.match(groupLabel))) {
+				let group_num = matches[1]
+				let group_label = message.args[2].value || ''
+				if (group_label) {
+					this.setInstanceStates(
+						{
+							[`group_label_${group_num}`]: message.args[2].value,
+						},
+						true
+					)
+				}
+			} else if ((matches = message.address.match(macroUpdated))) {
+				// A macro was updated, request new label
+				let macro_num = message.args[1].value
+				if (macro_num <= this.howManyMacroLabels) {
+					this.sendOsc('/eos/get/macro', [{ type: 'i', value: macro_num }], false)
+				}
+			} else if ((matches = message.address.match(macroLabel))) {
+				let macro_num = matches[1]
+				let macro_label = message.args[2].value || ''
 
-                if (macro_label) {
-                    // Update the instance state with the new macro label
-                    this.setInstanceStates(
-                        {
-                            [`macro_label_${macro_num}`]: message.args[2].value,
-                        },
-                        true
-                    )
-                }
-            } else if ((matches = message.address.match(macroFired))) {
-                // Macro was fired/triggered
-                let macro_num = matches[1]
-                this.log('info', `Macro ${macro_num} fired!`)
-                this.setInstanceStates(
-                    {
-                        macro_fired: macro_num,
-                    },
-                    false
-                )
-                this.log('debug', `macro_fired state set to: ${macro_num}`)
-                this.checkFeedbacks('macro_fired')
-                
-                // Clear the macro_fired state after 1 second
-                setTimeout(() => {
-                    this.setInstanceStates(
-                        {
-                            macro_fired: null,
-                        },
-                        false
-                    )
-                    this.log('debug', `macro_fired state cleared`)
-                    this.checkFeedbacks('macro_fired')
-                }, 1000)
-            } else if ((matches = message.address.match(groupNull))) {
-                let group_num = matches[1]
-                this.setInstanceStates(
-                    {
-                        [`group_label_${group_num}`]: '',
-                    },
-                    true
-                )
-            } else if (message.address === colorhs) {
+				if (macro_label) {
+					// Update the instance state with the new macro label
+					this.setInstanceStates(
+						{
+							[`macro_label_${macro_num}`]: message.args[2].value,
+						},
+						true
+					)
+				}
+			} else if ((matches = message.address.match(macroFired))) {
+				// Macro was fired/triggered
+				let macro_num = matches[1]
+				this.log('info', `Macro ${macro_num} fired!`)
+				this.setInstanceStates(
+					{
+						macro_fired: macro_num,
+					},
+					false
+				)
+				this.log('debug', `macro_fired state set to: ${macro_num}`)
+				this.checkFeedbacks('macro_fired')
+
+				// Clear the macro_fired state after 1 second
+				setTimeout(() => {
+					this.setInstanceStates(
+						{
+							macro_fired: null,
+						},
+						false
+					)
+					this.log('debug', `macro_fired state cleared`)
+					this.checkFeedbacks('macro_fired')
+				}, 1000)
+			} else if ((matches = message.address.match(groupNull))) {
+				let group_num = matches[1]
+				this.setInstanceStates(
+					{
+						[`group_label_${group_num}`]: '',
+					},
+					true
+				)
+			} else if (message.address === colorhs) {
 				// this.log('debug', `HS: ${hue} ${sat}`)
 				this.setInstanceStates(
 					{
@@ -639,11 +685,11 @@ class ModuleInstance extends InstanceBase {
 
 				if (wheel_num >= 1) {
 					// this.log('debug', '***** wheel message: ' + JSON.stringify(message))
-					let wheelTimer
+					let wheelTimer: NodeJS.Timeout
 					let wheel_label = message.args[0].value
 					let wheel_stringval = '0'
 					let wheel_cat = message.args[1].value || 0
-					let wheel_floatval = message.args[2].value
+					let wheel_floatval: string | number = message.args[2].value
 					if (wheel_floatval != null) {
 						wheel_floatval = Number(wheel_floatval)
 						wheel_floatval = wheel_floatval.toFixed(3)
@@ -682,7 +728,7 @@ class ModuleInstance extends InstanceBase {
 					if (this.readingWheels == false) {
 						this.readingWheels = true
 						// property, intentionally no 'let'
-						wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
+						let wheelTimer: any = undefined; wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
 					} else {
 						// cancel and restart timer waiting for next value
 						clearTimeout(wheelTimer)
@@ -690,17 +736,17 @@ class ModuleInstance extends InstanceBase {
 						wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
 					}
 				}
-			} 
+			}
 		})
 
 		this.oscSocket.open()
 
-		this.oscSocket.socket.on('close', (error) => {
+		this.oscSocket.socket.on('close', (error: any) => {
 			this.log('info', 'Connection closed')
 			this.setConnectionState(false)
 		})
 
-		this.oscSocket.socket.on('error', (err) => {
+		this.oscSocket.socket.on('error', (err: Error) => {
 			this.log('debug', `Socket error: ${err.message}`)
 			// Don't set disconnected here, let 'close' event handle it
 		})
@@ -722,7 +768,7 @@ class ModuleInstance extends InstanceBase {
 	/**
 	 * Start heartbeat monitoring to detect dead connections
 	 */
-	startHeartbeat() {
+	startHeartbeat(): void {
 		if (this.heartbeatInterval !== undefined) {
 			// Already running
 			return
@@ -735,17 +781,17 @@ class ModuleInstance extends InstanceBase {
 			}
 
 			const timeSinceLastMessage = Date.now() - this.lastMessageReceived
-			
+
 			if (timeSinceLastMessage > this.heartbeatTimeout) {
 				// No messages received for too long, connection is probably dead
 				this.log('warn', `No messages received for ${timeSinceLastMessage}ms, connection appears dead`)
 				this.setConnectionState(false)
-				
+
 				// Force socket close to trigger reconnect
 				if (this.oscSocket && this.oscSocket.socket) {
 					try {
 						this.oscSocket.socket.destroy()
-					} catch (e) {
+					} catch (e: any) {
 						this.log('debug', `Error destroying socket: ${e.message}`)
 					}
 				}
@@ -761,19 +807,19 @@ class ModuleInstance extends InstanceBase {
 	 * Assemble catXX_wheel_* variables after last wheel
 	 * parameter received.
 	 **/
-	doCategoryWheels(self) {
+	doCategoryWheels(self: ModuleInstance): void {
 		let variableDefinitions = GetVariableDefinitions(self)
-		let updateDefs = {}
-		let catWheels = []
+		let updateDefs: Record<string, any> = {}
+		let catWheels: number[][] = []
 
 		// if we got here, we assume we are done with the batch of wheel info
 		self.readingWheels = false
 
 		self.wheels.forEach(function (wheelobj, index, arr, self) {
-			if (!catWheels[wheelobj.cat]) {
-				catWheels[wheelobj.cat] = []
+			if (!catWheels[wheelobj.cat as any]) {
+				catWheels[wheelobj.cat as any] = []
 			}
-			catWheels[wheelobj.cat].push(index)
+			catWheels[wheelobj.cat as any].push(index)
 		})
 		// Loop through categories 0-6
 		for (let i = 0; i <= 6; i++) {
@@ -804,10 +850,10 @@ class ModuleInstance extends InstanceBase {
 	/**
 	 * Reset our internal variables
 	 */
-	emptyEncVariables() {
+	emptyEncVariables(): void {
 		let variableDefinitions = GetVariableDefinitions(this)
-		let updateDefs = {}
-		variableDefinitions.forEach(function (varDef) {
+		let updateDefs: Record<string, any> = {}
+		variableDefinitions.forEach(function (varDef: any) {
 			if (
 				varDef['variableId'].startsWith('enc_') ||
 				// || varDef['variableId'].startsWith('wheel_') // deprecated
@@ -823,35 +869,35 @@ class ModuleInstance extends InstanceBase {
 	/**
 	 * Empties the state (variables/feedbacks) and requests the current state from the console.
 	 */
-	requestFullState() {
+	requestFullState(): void {
 		this.emptyState()
 
 		// Request the current state of the console.
 		this.sendOsc('/eos/reset', [], false)
 
 		// Switch to the correct user_id.
-		this.sendOsc('/eos/user', [ { type: 'i', value: this.config.user_id } ], false)
-        
-        // Turn on subscription for show file event updates
-        this.sendOsc('/eos/subscribe', [ { type: 'i', value: 1 } ], false)
-        
-        // Get xx groups worth of labels - issue the request here to get the values,
-        // they are caught in the on.message elsewhere
-        for ( let i=1; i <= this.howManyGroupLabels; i++ ) {
-            // this.sendOsc('/eos/get/group/index', [ { type: 'i', value: i } ], false)
-            this.sendOsc('/eos/get/group', [ { type: 'i', value: i } ], false)
-        }
-        // Get xx macros worth of labels - issue the request here to get the values,
-        // they are caught in the on.message elsewhere
-        for ( let i=this.startMacro; i <= this.howManyMacroLabels+this.startMacro; i++ ) {
-            this.sendOsc('/eos/get/macro', [ { type: 'i', value: i } ], false)
-        }
+		this.sendOsc('/eos/user', [{ type: 'i', value: this.config.user_id }], false)
+
+		// Turn on subscription for show file event updates
+		this.sendOsc('/eos/subscribe', [{ type: 'i', value: 1 }], false)
+
+		// Get xx groups worth of labels - issue the request here to get the values,
+		// they are caught in the on.message elsewhere
+		for (let i = 1; i <= this.howManyGroupLabels; i++) {
+			// this.sendOsc('/eos/get/group/index', [ { type: 'i', value: i } ], false)
+			this.sendOsc('/eos/get/group', [{ type: 'i', value: i }], false)
+		}
+		// Get xx macros worth of labels - issue the request here to get the values,
+		// they are caught in the on.message elsewhere
+		for (let i = this.startMacro; i <= this.howManyMacroLabels + this.startMacro; i++) {
+			this.sendOsc('/eos/get/macro', [{ type: 'i', value: i }], false)
+		}
 	}
 
 	/**
 	 * Empties the state (variables/feedbacks).
 	 */
-	emptyState() {
+	emptyState(): void {
 		// Empty the state, but preserve the connected state.
 		this.instanceState = {
 			connected: this.instanceState['connected'],
@@ -863,7 +909,7 @@ class ModuleInstance extends InstanceBase {
 	/**
 	 * Parses a cue's name (and the additional information within it) and updates the internal state.
 	 */
-	parseCueName(type, cueName) {
+	parseCueName(type: string, cueName: string): void {
 		// Cue name will look something like:
 		//  51.1 Drums 3.0 100%
 		//  <CUE NUMBER> <LABEL> <DURATION> [<INTENSITY PERCENTAGE>]
@@ -882,7 +928,7 @@ class ModuleInstance extends InstanceBase {
 
 		if (matches !== null && matches.length >= 6) {
 			// Parse the response.
-			const newValues = {
+			const newValues: Record<string, any> = {
 				[`cue_${type}_label`]: matches[3] || matches[2], // Use cue number if label not available.
 				[`cue_${type}_duration`]: matches[5],
 			}
@@ -921,7 +967,7 @@ class ModuleInstance extends InstanceBase {
 	 * @param args          An array of arguments, or empty if no arguments needed
 	 * @param appendPrefix  Whether to append the '/eos/' prefix to the command.
 	 */
-	sendOsc(path, args, appendPrefix) {
+	sendOsc(path: string, args: any[], appendPrefix: boolean): void {
 		if (!this.config.host) {
 			return
 		}
@@ -945,27 +991,27 @@ class ModuleInstance extends InstanceBase {
 	/*
 	 * For actions
 	 */
-	setIntensity(prefix, id, value) {
+	setIntensity(prefix: string, id: string | number, value: string | number): void {
 		let suffix = ''
-		let arg = []
-		if (!isNaN(value)) {
+		let arg: any[] = []
+		if (!isNaN(value as any)) {
 			// Numeric value as a percentage
 			if (prefix == 'sub') {
 				// Value must be a float from 0.0 to 1.0 for subs.
-				arg = [{ type: 'f', value: Math.min(100, parseFloat(value)) / 100.0 }]
+				arg = [{ type: 'f', value: Math.min(100, parseFloat(value as string)) / 100.0 }]
 			} else {
 				// Value must be an int from 1 to 100 for chans/groups.
-				arg = [{ type: 'f', value: Math.min(100, parseInt(value)) }]
+				arg = [{ type: 'f', value: Math.min(100, parseInt(value as string)) }]
 			}
 		} else {
 			// A special command, like "min", "max", "out", "full. Append to command.
 			suffix = `/${value}`
 		}
 
-		this.sendOsc(`${prefix}/${id}${suffix}`, arg)
+		this.sendOsc(`${prefix}/${id}${suffix}`, arg, true)
 	}
 
-	getDistinctParamForWheelLabel(wheel_label) {
+	getDistinctParamForWheelLabel(wheel_label: string): string {
 		let distinctparam = ''
 		if (wheel_label != null && wheel_label != '') {
 			let lc_wheel_label = wheel_label.toLowerCase()
@@ -977,4 +1023,4 @@ class ModuleInstance extends InstanceBase {
 	}
 }
 
-runEntrypoint(ModuleInstance, UpgradeScripts)
+export default runEntrypoint(ModuleInstance, UpgradeScripts)

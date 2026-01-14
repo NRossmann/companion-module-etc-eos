@@ -6,9 +6,9 @@
 //
 // NOTE: key is lower case
 //
-const constants = require('./constants.js')
+import * as constants from './constants.js'
 
-const ParamMap = {
+export const ParamMap: Record<string, string> = {
 	intens: 'enc_intensity',
 	'background intensity': 'enc_background_intensity',
 	zoom: 'enc_zoom',
@@ -101,7 +101,6 @@ const ParamMap = {
 	'effect macros': 'enc_effect_macros',
 	'form mspeed': 'enc_form_mspeed',
 	tint: 'enc_tint',
-	'color temperature': 'enc_color_temperature',
 	'color mix mode 2': 'enc_color_mix_mode_2',
 	'color crossfade': 'enc_color_crossfade',
 	'CIE X': 'enc_cie_x',
@@ -121,5 +120,3 @@ const ParamMap = {
 	'CIE X 8': 'enc_cie_x_8',
 	'CIE Y 8': 'enc_cie_y_8',
 }
-
-module.exports = { ParamMap }

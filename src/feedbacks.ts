@@ -1,6 +1,6 @@
-const { combineRgb, Regex } = require('@companion-module/base')
+import { combineRgb, Regex } from '@companion-module/base'
 
-module.exports = function (self) {
+export default function (self: any): void {
 	self.setFeedbackDefinitions({
 		pending_cue: {
 			type: 'boolean',
@@ -26,7 +26,7 @@ module.exports = function (self) {
 					regex: Regex.FLOAT_OR_INT,
 				},
 			],
-			callback: (feedback) => {
+			callback: (feedback: any) => {
 				return (
 					feedback.options.list === self.instanceState['cue_pending_list'] &&
 					feedback.options.number === self.instanceState['cue_pending_num']
@@ -57,7 +57,7 @@ module.exports = function (self) {
 					regex: Regex.FLOAT_OR_INT,
 				},
 			],
-			callback: (feedback) => {
+			callback: (feedback: any) => {
 				return (
 					feedback.options.list === self.instanceState['cue_active_list'] &&
 					feedback.options.number === self.instanceState['cue_active_num']
@@ -88,7 +88,7 @@ module.exports = function (self) {
 					regex: Regex.FLOAT_OR_INT,
 				},
 			],
-			callback: (feedback) => {
+			callback: (feedback: any) => {
 				return (
 					feedback.options.list === self.instanceState['cue_previous_list'] &&
 					feedback.options.number === self.instanceState['cue_previous_num']
@@ -111,7 +111,7 @@ module.exports = function (self) {
 					default: true,
 				},
 			],
-			callback: (feedback) => {
+			callback: (feedback: any) => {
 				return feedback.options.connected === self.instanceState['connected']
 			},
 		},
@@ -132,9 +132,12 @@ module.exports = function (self) {
 					regex: Regex.NUMBER,
 				},
 			],
-			callback: (feedback) => {
+			callback: (feedback: any) => {
 				const result = feedback.options.macro === self.instanceState['macro_fired']
-				self.log('debug', `macro_fired feedback check: expected=${feedback.options.macro}, actual=${self.instanceState['macro_fired']}, result=${result}`)
+				self.log(
+					'debug',
+					`macro_fired feedback check: expected=${feedback.options.macro}, actual=${self.instanceState['macro_fired']}, result=${result}`
+				)
 				return result
 			},
 		},

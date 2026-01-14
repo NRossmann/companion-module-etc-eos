@@ -1,6 +1,6 @@
-const { CreateConvertToBooleanFeedbackUpgradeScript } = require('@companion-module/base')
+import { CreateConvertToBooleanFeedbackUpgradeScript } from '@companion-module/base'
 
-module.exports = [
+export default [
 	CreateConvertToBooleanFeedbackUpgradeScript({
 		pending_cue: true,
 		active_cue: true,

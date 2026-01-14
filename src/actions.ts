@@ -1,6 +1,6 @@
-const { Regex } = require('@companion-module/base')
+import { Regex } from '@companion-module/base'
 
-module.exports = function (self) {
+export default function (self: any): void {
 	self.setActionDefinitions({
 		custom_cmd: {
 			name: 'Custom Command',
@@ -35,7 +35,7 @@ module.exports = function (self) {
 					],
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const before = event.options.before === 'clear' ? 'newcmd' : 'cmd'
 				const cmd = await context.parseVariablesInString(event.options.cmd || '')
 				const after = event.options.after === 'add' ? '' : '#'
@@ -54,7 +54,7 @@ module.exports = function (self) {
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const osc_path = await context.parseVariablesInString(event.options.osc_path || '')
 				self.sendOsc(osc_path, [], false)
 			},
@@ -82,16 +82,16 @@ module.exports = function (self) {
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const osc_path = await context.parseVariablesInString(event.options.osc_path)
 				const osc_argsStr = await context.parseVariablesInString(event.options.osc_args)
-				const rawArgs = (osc_argsStr + '').replace(/“/g, '"').replace(/”/g, '"').split(' ')
+				const rawArgs = (osc_argsStr + '').replace(/"/g, '"').replace(/"/g, '"').split(' ')
 
 				if (rawArgs.length) {
 					const args = []
 					for (let i = 0; i < rawArgs.length; i++) {
 						if (rawArgs[i].length == 0) continue
-						if (isNaN(rawArgs[i])) {
+						if (isNaN(rawArgs[i] as any)) {
 							let str = rawArgs[i]
 							if (str.startsWith('"')) {
 								//a quoted string..
@@ -104,7 +104,7 @@ module.exports = function (self) {
 								try {
 									args.push(JSON.parse(rawArgs[i]))
 								} catch (error) {
-									this.log('error', `not a JSON object ${rawArgs[i]}`)
+									self.log('error', `not a JSON object ${rawArgs[i]}`)
 								}
 							}
 
@@ -132,21 +132,21 @@ module.exports = function (self) {
 		blackout: {
 			name: 'Key: Blackout',
 			options: [],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				self.sendOsc('key/blackout', [])
 			},
 		},
 		next_cue: {
 			name: 'Key: Go',
 			options: [],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				self.sendOsc(`key/go_0`, [{ type: 'f', value: 1.0 }])
 			},
 		},
 		stop_back: {
 			name: 'Key: Stop/Back',
 			options: [],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				self.sendOsc(`key/stop`, [{ type: 'f', value: 1.0 }])
 			},
 		},
@@ -170,7 +170,7 @@ module.exports = function (self) {
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const list = await context.parseVariablesInString(event.options.list)
 				const number = await context.parseVariablesInString(event.options.number)
 				self.sendOsc(`cue/${list}/${number}/fire`, [])
@@ -187,12 +187,12 @@ module.exports = function (self) {
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const macroStr = await context.parseVariablesInString(event.options.macro)
 				self.log('debug', `run_macro: input="${event.options.macro}", parsed="${macroStr}"`)
-				
+
 				let macroNum = Number(macroStr)
-				
+
 				// If not a valid number, try to evaluate as math expression
 				if (isNaN(macroNum)) {
 					try {
@@ -205,12 +205,12 @@ module.exports = function (self) {
 						return
 					}
 				}
-				
+
 				if (isNaN(macroNum)) {
 					self.log('warn', `run_macro: Invalid macro number "${macroStr}" from input "${event.options.macro}"`)
 					return
 				}
-				
+
 				self.log('debug', `run_macro: sending macro ${macroNum}`)
 				self.sendOsc('macro/fire', [{ type: 'i', value: Math.floor(macroNum) }])
 			},
@@ -227,7 +227,7 @@ module.exports = function (self) {
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const key = await context.parseVariablesInString(event.options.key)
 				self.sendOsc('key/' + key, [])
 			},
@@ -249,11 +249,11 @@ module.exports = function (self) {
 					label: 'Value',
 					tooltip: "A percentage from 0 to 100, or 'out', 'full', 'min', 'max'.",
 					default: '100',
-					regex: '/^(\\d+|out|full|min|max)$/',
+					regex: '/^(\\\\d+|out|full|min|max)$/',
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const id = await context.parseVariablesInString(event.options.id)
 				const value = await context.parseVariablesInString(event.options.value)
 
@@ -277,11 +277,11 @@ module.exports = function (self) {
 					label: 'Value',
 					tooltip: "A percentage from 0 to 100, or 'out', 'full', 'min', 'max'.",
 					default: '100',
-					regex: '/^(\\d+|out|full|min|max)$/',
+					regex: '/^(\\\\d+|out|full|min|max)$/',
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const id = await context.parseVariablesInString(event.options.id)
 				const value = await context.parseVariablesInString(event.options.value)
 
@@ -305,11 +305,11 @@ module.exports = function (self) {
 					label: 'Value',
 					tooltip: "A percentage from 0 to 100, or 'out', 'full', 'min', 'max'.",
 					default: '100',
-					regex: '/^(\\d+|out|full|min|max)$/',
+					regex: '/^(\\\\d+|out|full|min|max)$/',
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const id = await context.parseVariablesInString(event.options.id)
 				const value = await context.parseVariablesInString(event.options.value)
 
@@ -339,7 +339,7 @@ module.exports = function (self) {
 					],
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const submaster = await context.parseVariablesInString(event.options.sub)
 
 				let arg
@@ -368,7 +368,7 @@ module.exports = function (self) {
 					useVariables: true,
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const preset = await context.parseVariablesInString(event.options.preset)
 
 				self.sendOsc(`preset/${preset}/fire`, [])
@@ -397,7 +397,7 @@ module.exports = function (self) {
 					],
 				},
 			],
-			callback: async (event, context) => {
+			callback: async (event: any, context: any) => {
 				const key = await context.parseVariablesInString(event.options.key)
 
 				let arg
