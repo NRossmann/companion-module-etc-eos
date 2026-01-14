@@ -1,6 +1,7 @@
 // Import the necessary modules and classes
-const runEntrypoint = require('@companion-module/base').runEntrypoint
 const { InstanceStatus } = require('@companion-module/base')
+
+let ModuleInstance
 
 // Mock Companion to get the class
 jest.mock('@companion-module/base', () => {
@@ -8,7 +9,10 @@ jest.mock('@companion-module/base', () => {
 	return {
 		...original,
 		InstanceBase: jest.fn(),
-		runEntrypoint: jest.fn(),
+		runEntrypoint: jest.fn((moduleClass) => {
+			ModuleInstance = moduleClass
+			return moduleClass
+		}),
 	}
 })
 
@@ -16,15 +20,37 @@ jest.mock('@companion-module/base', () => {
 describe('ModuleInstance', () => {
 	let instance
 
-	const ModuleInstance = require('./main')
-	const module = runEntrypoint.mock.calls[0][0]
+	// Import after mock is set up
+	require('./main')
+
+	beforeAll(() => {
+		if (!ModuleInstance) {
+			throw new Error('ModuleInstance not captured from runEntrypoint')
+		}
+	})
+
+	beforeAll(() => {
+		if (!ModuleInstance) {
+			throw new Error('ModuleInstance not captured from runEntrypoint')
+		}
+	})
 
 	beforeEach(() => {
-		instance = new module('')
+		instance = new ModuleInstance('')
 		instance.instanceState = {}
 		instance.checkFeedbacks = jest.fn()
 		instance.setVariableValues = jest.fn()
-		instance.wheels = [] // Initialize wheels array
+		instance.updateStatus = jest.fn()
+		instance.sendOsc = jest.fn()
+
+		// Initialize handlers that would normally be created in init()
+		const StateManager = require('./state-manager.js').StateManager
+		const WheelHandler = require('./wheel-handler.js').WheelHandler
+		const OSCConnection = require('./osc-connection.js').OSCConnection
+
+		instance.stateManager = new StateManager(instance)
+		instance.wheelHandler = new WheelHandler(instance)
+		instance.oscConnection = { setConnectionState: jest.fn() }
 	})
 
 	afterEach(() => {
@@ -47,13 +73,13 @@ describe('ModuleInstance', () => {
 
 	describe('parseCueName', () => {
 		test('should handle an active cue', () => {
-			expect(instance.parseCueName('active', '')).toEqual()
+			expect(instance.stateManager.parseCueName('active', '')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalled()
 			expect(instance.checkFeedbacks).toHaveBeenCalledWith('active_cue')
 		})
 
 		test('should handle a pending cue < 1 min', () => {
-			expect(instance.parseCueName('pending', '1/0.91 test 59.0')).toEqual()
+			expect(instance.stateManager.parseCueName('pending', '1/0.91 test 59.0')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_pending_duration: '59.0',
 				cue_pending_intensity: undefined,
@@ -62,7 +88,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should handle a cue with unusual characters in the label', () => {
-			expect(instance.parseCueName('test', '1/2 before after / max. colon : 100% end 1.0 100%')).toEqual()
+			expect(instance.stateManager.parseCueName('test', '1/2 before after / max. colon : 100% end 1.0 100%')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_test_duration: '1.0',
 				cue_test_intensity: '100%',
@@ -71,7 +97,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should handle a cue with shortest time', () => {
-			expect(instance.parseCueName('test', '1/2 min 0.0 100%')).toEqual()
+			expect(instance.stateManager.parseCueName('test', '1/2 min 0.0 100%')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_test_duration: '0.0',
 				cue_test_intensity: '100%',
@@ -80,7 +106,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should handle a cue with level', () => {
-			expect(instance.parseCueName('test', '51.1 Drums 3.0 100%')).toEqual()
+			expect(instance.stateManager.parseCueName('test', '51.1 Drums 3.0 100%')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_test_duration: '3.0',
 				cue_test_intensity: '100%',
@@ -89,7 +115,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should handle a cue with level but no label', () => {
-			expect(instance.parseCueName('test', '51.1 3.0 100%')).toEqual()
+			expect(instance.stateManager.parseCueName('test', '51.1 3.0 100%')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_test_duration: '3.0',
 				cue_test_intensity: '100%',
@@ -99,7 +125,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should handle a cue with no label', () => {
-			expect(instance.parseCueName('test', '51.1 3.0')).toEqual()
+			expect(instance.stateManager.parseCueName('test', '51.1 3.0')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_test_duration: '3.0',
 				cue_test_intensity: undefined,
@@ -109,7 +135,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should clear active cue when cue is " 0.0 "', () => {
-			expect(instance.parseCueName('active', ' 0.0 ')).toEqual()
+			expect(instance.stateManager.parseCueName('active', ' 0.0 ')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_active_list: '',
 				cue_active_num: '',
@@ -118,7 +144,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should clear active cue when cue is empty', () => {
-			expect(instance.parseCueName('active', '')).toEqual()
+			expect(instance.stateManager.parseCueName('active', '')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_active_list: '',
 				cue_active_num: '',
@@ -127,7 +153,7 @@ describe('ModuleInstance', () => {
 		})
 
 		test('should handle cue with list format (1/1)', () => {
-			expect(instance.parseCueName('test', '1/1 Opening 5.0 100%')).toEqual()
+			expect(instance.stateManager.parseCueName('test', '1/1 Opening 5.0 100%')).toEqual()
 			expect(instance.setVariableValues).toHaveBeenCalledWith({
 				cue_test_duration: '5.0',
 				cue_test_intensity: '100%',
@@ -138,19 +164,19 @@ describe('ModuleInstance', () => {
 
 	describe('setInstanceStates', () => {
 		test('should update internal state', () => {
-			instance.setInstanceStates({ key1: 'value1', key2: 'value2' }, false)
+			instance.stateManager.setInstanceStates({ key1: 'value1', key2: 'value2' }, false)
 			expect(instance.instanceState.key1).toBe('value1')
 			expect(instance.instanceState.key2).toBe('value2')
 		})
 
 		test('should update variables when isVariable is true', () => {
-			instance.setInstanceStates({ varKey: 'varValue' }, true)
+			instance.stateManager.setInstanceStates({ varKey: 'varValue' }, true)
 			expect(instance.instanceState.varKey).toBe('varValue')
 			expect(instance.setVariableValues).toHaveBeenCalledWith({ varKey: 'varValue' })
 		})
 
 		test('should not update variables when isVariable is false', () => {
-			instance.setInstanceStates({ stateKey: 'stateValue' }, false)
+			instance.stateManager.setInstanceStates({ stateKey: 'stateValue' }, false)
 			expect(instance.instanceState.stateKey).toBe('stateValue')
 			expect(instance.setVariableValues).not.toHaveBeenCalled()
 		})
@@ -158,13 +184,13 @@ describe('ModuleInstance', () => {
 
 	describe('emptyWheelData', () => {
 		test('should initialize 100 wheels with empty data', () => {
-			instance.emptyWheelData()
-			expect(instance.wheels.length).toBe(101) // 0-100
-			expect(instance.wheels[1].label).toBe('')
-			expect(instance.wheels[1].stringval).toBe('')
-			expect(instance.wheels[1].cat).toBe('')
-			expect(instance.wheels[1].floatval).toBe('')
-			expect(instance.wheels[100].label).toBe('')
+			instance.wheelHandler.emptyWheelData()
+			expect(instance.wheelHandler.wheels.length).toBe(101) // 0-100
+			expect(instance.wheelHandler.wheels[1].label).toBe('')
+			expect(instance.wheelHandler.wheels[1].stringval).toBe('')
+			expect(instance.wheelHandler.wheels[1].cat).toBe('')
+			expect(instance.wheelHandler.wheels[1].floatval).toBe('')
+			expect(instance.wheelHandler.wheels[100].label).toBe('')
 		})
 	})
 
@@ -175,14 +201,14 @@ describe('ModuleInstance', () => {
 				cue_active_label: 'Test Cue',
 				cue_pending_label: 'Next Cue',
 			}
-			instance.emptyState()
+			instance.stateManager.emptyState()
 			expect(instance.instanceState.connected).toBe(true)
 			expect(instance.instanceState.cue_active_label).toBeUndefined()
 			expect(instance.instanceState.cue_pending_label).toBeUndefined()
 		})
 
 		test('should trigger feedback checks', () => {
-			instance.emptyState()
+			instance.stateManager.emptyState()
 			expect(instance.checkFeedbacks).toHaveBeenCalledWith('pending_cue', 'active_cue', 'connected')
 		})
 	})
@@ -190,43 +216,56 @@ describe('ModuleInstance', () => {
 	describe('setConnectionState', () => {
 		beforeEach(() => {
 			instance.updateStatus = jest.fn()
+			// Mock the oscConnection.setConnectionState method
+			instance.oscConnection.setConnectionState = jest.fn((isConnected) => {
+				const InstanceStatus = require('@companion-module/base').InstanceStatus
+				const status = isConnected ? InstanceStatus.Ok : InstanceStatus.Disconnected
+				const wasConnected = instance.instanceState.connected
+
+				instance.updateStatus(status)
+				instance.instanceState.connected = isConnected
+
+				if (wasConnected !== isConnected) {
+					instance.checkFeedbacks('connected')
+				}
+			})
 		})
 
 		test('should update status to Ok when connected', () => {
 			const InstanceStatus = require('@companion-module/base').InstanceStatus
-			instance.setConnectionState(true)
+			instance.oscConnection.setConnectionState(true)
 			expect(instance.updateStatus).toHaveBeenCalledWith(InstanceStatus.Ok)
 			expect(instance.instanceState.connected).toBe(true)
 		})
 
 		test('should update status to Disconnected when not connected', () => {
 			const InstanceStatus = require('@companion-module/base').InstanceStatus
-			instance.setConnectionState(false)
+			instance.oscConnection.setConnectionState(false)
 			expect(instance.updateStatus).toHaveBeenCalledWith(InstanceStatus.Disconnected)
 			expect(instance.instanceState.connected).toBe(false)
 		})
 
 		test('should check feedbacks when connection state changes', () => {
 			instance.instanceState.connected = false
-			instance.setConnectionState(true)
+			instance.oscConnection.setConnectionState(true)
 			expect(instance.checkFeedbacks).toHaveBeenCalledWith('connected')
 		})
 
 		test('should not check feedbacks when connection state unchanged', () => {
 			instance.instanceState.connected = true
-			instance.setConnectionState(true)
+			instance.oscConnection.setConnectionState(true)
 			expect(instance.checkFeedbacks).not.toHaveBeenCalledWith('connected')
 		})
 	})
 
 	describe('getDistinctParamForWheelLabel', () => {
 		test('should return empty string for null label', () => {
-			const result = instance.getDistinctParamForWheelLabel(null)
+			const result = instance.wheelHandler.getDistinctParamForWheelLabel(null)
 			expect(result).toBe('')
 		})
 
 		test('should return empty string for empty label', () => {
-			const result = instance.getDistinctParamForWheelLabel('')
+			const result = instance.wheelHandler.getDistinctParamForWheelLabel('')
 			expect(result).toBe('')
 		})
 
@@ -235,7 +274,7 @@ describe('ModuleInstance', () => {
 			// Test with a known mapping if ParamMap has entries
 			const testLabel = Object.keys(ParamMap)[0]
 			if (testLabel) {
-				const result = instance.getDistinctParamForWheelLabel(testLabel.toUpperCase())
+				const result = instance.wheelHandler.getDistinctParamForWheelLabel(testLabel.toUpperCase())
 				expect(result).toBe(ParamMap[testLabel])
 			}
 		})
@@ -249,37 +288,37 @@ describe('ModuleInstance', () => {
 
 		test('should send percentage value for channel', () => {
 			instance.setIntensity('chan', 1, 75)
-			expect(instance.sendOsc).toHaveBeenCalledWith('chan/1', [{ type: 'f', value: 75 }])
+			expect(instance.sendOsc).toHaveBeenCalledWith('chan/1', [{ type: 'f', value: 75 }], true)
 		})
 
 		test('should send normalized value for sub', () => {
 			instance.setIntensity('sub', 5, 50)
-			expect(instance.sendOsc).toHaveBeenCalledWith('sub/5', [{ type: 'f', value: 0.5 }])
+			expect(instance.sendOsc).toHaveBeenCalledWith('sub/5', [{ type: 'f', value: 0.5 }], true)
 		})
 
 		test('should cap value at 100 for channel', () => {
 			instance.setIntensity('chan', 2, 150)
-			expect(instance.sendOsc).toHaveBeenCalledWith('chan/2', [{ type: 'f', value: 100 }])
+			expect(instance.sendOsc).toHaveBeenCalledWith('chan/2', [{ type: 'f', value: 100 }], true)
 		})
 
 		test('should cap value at 100 for sub', () => {
 			instance.setIntensity('sub', 3, 150)
-			expect(instance.sendOsc).toHaveBeenCalledWith('sub/3', [{ type: 'f', value: 1.0 }])
+			expect(instance.sendOsc).toHaveBeenCalledWith('sub/3', [{ type: 'f', value: 1.0 }], true)
 		})
 
 		test('should handle special command "out"', () => {
 			instance.setIntensity('chan', 10, 'out')
-			expect(instance.sendOsc).toHaveBeenCalledWith('chan/10/out', [])
+			expect(instance.sendOsc).toHaveBeenCalledWith('chan/10/out', [], true)
 		})
 
 		test('should handle special command "full"', () => {
 			instance.setIntensity('group', 5, 'full')
-			expect(instance.sendOsc).toHaveBeenCalledWith('group/5/full', [])
+			expect(instance.sendOsc).toHaveBeenCalledWith('group/5/full', [], true)
 		})
 
 		test('should handle special command "min"', () => {
 			instance.setIntensity('chan', 7, 'min')
-			expect(instance.sendOsc).toHaveBeenCalledWith('chan/7/min', [])
+			expect(instance.sendOsc).toHaveBeenCalledWith('chan/7/min', [], true)
 		})
 	})
 
@@ -293,6 +332,7 @@ describe('ModuleInstance', () => {
 
 		test('should have valid defaults for numeric fields', () => {
 			const constants = require('./constants.ts')
+			const configFields = instance.getConfigFields()
 
 			const wheelsField = configFields.find((f) => f.id === 'wheels_per_cat')
 			expect(wheelsField.default).toBe(constants.WHEELS_PER_CAT)
