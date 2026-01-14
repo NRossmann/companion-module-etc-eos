@@ -5,3 +5,4 @@ package-lock.json
 /pkg.zip
 /build.sh
 dist/
+.vscode/
