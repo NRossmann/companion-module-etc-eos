@@ -1,62 +1,30 @@
-import { InstanceBase, InstanceStatus, Regex, runEntrypoint } from '@companion-module/base'
+import { InstanceBase, InstanceStatus, runEntrypoint } from '@companion-module/base'
 import UpdateActions from './actions.js'
+import { getConfigFields } from './config.js'
 import * as constants from './constants.js'
 import UpdateFeedbacks from './feedbacks.js'
-import { ParamMap } from './param_map.js'
+import { ConnectionMode, OSCConnection } from './osc-connection.js'
 import UpdatePresetDefinitions from './presets.js'
+import { StateManager } from './state-manager.js'
+import type { ModuleConfig } from './types.js'
 import UpgradeScripts from './upgrades.js'
-import { GetVariableDefinitions, UpdateVariableDefinitions } from './variables.js'
-// @ts-ignore - no types available for osc
-import OSC from 'osc'
-
-interface ModuleConfig {
-	host?: string
-	user_id?: string
-	eos_port?: number
-	eos_port_slip?: number
-	num_group_labels?: number
-	num_macro_labels?: number
-	num_macro_start?: number
-	wheels_per_cat?: number
-	num_softkeys?: number
-}
-
-interface ConnectionMode {
-	port: number
-	useSlip: boolean
-	label: string
-}
-
-interface WheelData {
-	label: string
-	stringval: string
-	cat: string | number
-	floatval: string | number
-}
+import { UpdateVariableDefinitions } from './variables.js'
+import { WheelHandler } from './wheel-handler.js'
 
 class ModuleInstance extends InstanceBase<ModuleConfig> {
 	config!: ModuleConfig
 	instanceState: Record<string, any> = {}
 	debugToLogger: boolean = true
 	lastActChan: number = -1
-	connectionModes: ConnectionMode[] = []
-	currentModeIndex: number = 0
-	eos_port: number = 0
-	use_slip: boolean = false
-	readingWheels: boolean = false
 	howManyGroupLabels: number = 0
 	howManyMacroLabels: number = 0
 	startMacro: number = 0
-	wpc: number = 0
 	wheelsPerCategory: number = 0
-	wheels: WheelData[] = []
-	lastMessageReceived: number = 0
-	heartbeatInterval: NodeJS.Timeout | undefined
-	heartbeatTimeout: number = 30000
-	oscSocket: any
-	reconnectTimer: NodeJS.Timeout | undefined
-	failedConnectionAttempts: number = 0
-	lastConnectionAttemptTime: number = 0
+
+	// Handlers
+	stateManager!: StateManager
+	wheelHandler!: WheelHandler
+	oscConnection!: OSCConnection
 
 	constructor(internal: any) {
 		super(internal)
@@ -69,77 +37,41 @@ class ModuleInstance extends InstanceBase<ModuleConfig> {
 
 		this.instanceState = {}
 		this.debugToLogger = true
-
 		this.lastActChan = -1
-		// Auto-detect: try all combinations of port and SLIP
+
+		// Initialize configuration parameters
+		this.howManyGroupLabels = this.config.num_group_labels || constants.NUM_GROUP_LABELS
+		this.howManyMacroLabels = this.config.num_macro_labels || constants.NUM_MACRO_LABELS
+		this.startMacro = this.config.num_macro_start || constants.NUM_MACRO_START
+		this.wheelsPerCategory = this.config.wheels_per_cat || constants.WHEELS_PER_CAT
+
+		// Initialize handlers
+		this.stateManager = new StateManager(this)
+		this.wheelHandler = new WheelHandler(this)
+		this.oscConnection = new OSCConnection(this)
+
+		// Setup connection modes for auto-detection
 		const eosPort = this.config.eos_port || constants.EOS_PORT
 		const eosPortSlip = this.config.eos_port_slip || constants.EOS_PORT_SLIP
-		this.connectionModes = [
+		const connectionModes: ConnectionMode[] = [
 			{ port: eosPortSlip, useSlip: true, label: `Port ${eosPortSlip} with SLIP` },
 			{ port: eosPortSlip, useSlip: false, label: `Port ${eosPortSlip} without SLIP` },
 			{ port: eosPort, useSlip: true, label: `Port ${eosPort} with SLIP` },
 			{ port: eosPort, useSlip: false, label: `Port ${eosPort} without SLIP` },
 		]
-		this.currentModeIndex = 0
-		this.eos_port = this.connectionModes[0].port
-		this.use_slip = this.connectionModes[0].useSlip
-		this.readingWheels = false
-
-		// how many groups to get labels for
-		this.howManyGroupLabels = this.config.num_group_labels || constants.NUM_GROUP_LABELS
-		this.howManyMacroLabels = this.config.num_macro_labels || constants.NUM_MACRO_LABELS
-		this.startMacro = this.config.num_macro_start || constants.NUM_MACRO_START
-
-		// Wheel information as module only variables, not exposed
-		const wheelsPerCat = this.config.wheels_per_cat || constants.WHEELS_PER_CAT
-		this.wpc = wheelsPerCat
-		this.wheelsPerCategory = wheelsPerCat
-		this.wheels = []
-		this.emptyWheelData() // clear out encoder wheel values
 
 		this.updateActions() // export actions
 		this.updateFeedbacks() // export feedbacks
 		this.updateVariableDefinitions() // export variable definitions
 		this.updatePresets() // export presets
 
-		this.lastMessageReceived = Date.now()
-		this.heartbeatInterval = undefined
-		this.heartbeatTimeout = 30000 // 30 seconds without message = disconnect
-
-		this.oscSocket = this.getOsc10Socket(this.config.host, this.eos_port)
-		this.setOscSocketListeners()
-		this.startReconnectTimer()
-		this.startHeartbeat()
-	}
-
-	// Empty wheel data
-	emptyWheelData(): void {
-		for (let i = 1; i <= 100; i++) {
-			this.wheels[i] = {
-				label: '',
-				stringval: '',
-				cat: '',
-				floatval: '',
-			}
-		}
+		// Initialize OSC connection
+		this.oscConnection.initialize(connectionModes)
 	}
 
 	// When module gets deleted
 	async destroy(): Promise<void> {
-		// Clear the reconnect timer if it exists.
-		if (this.reconnectTimer !== undefined) {
-			clearInterval(this.reconnectTimer)
-			this.reconnectTimer = undefined
-		}
-
-		// Clear the heartbeat timer if it exists.
-		if (this.heartbeatInterval !== undefined) {
-			clearInterval(this.heartbeatInterval)
-			this.heartbeatInterval = undefined
-		}
-
-		// Close the socket.
-		this.closeOscSocket()
+		this.oscConnection.destroy()
 		this.log('debug', 'destroy')
 	}
 
@@ -150,118 +82,14 @@ class ModuleInstance extends InstanceBase<ModuleConfig> {
 		this.config = config
 
 		if (currentHost !== this.config.host || currentUserId !== this.config.user_id) {
-			this.closeOscSocket()
+			this.oscConnection.closeOscSocket()
 			await this.init(config)
 		}
 	}
 
 	// Return config fields for web config
 	getConfigFields(): any[] {
-		return [
-			{
-				type: 'textinput',
-				id: 'host',
-				label: 'Target IP',
-				width: 8,
-				regex: Regex.IP,
-			},
-			{
-				type: 'textinput',
-				id: 'user_id',
-				label: 'User ID',
-				default: 1,
-				width: 4,
-				regex: '/^(-1|0|\\d+)$/',
-			},
-			{
-				type: 'static-text',
-				id: 'advanced_settings',
-				label: 'Advanced Settings',
-				value: 'Configure system parameters below',
-				width: 12,
-			},
-			{
-				type: 'number',
-				id: 'wheels_per_cat',
-				label: 'Wheels per Category',
-				default: constants.WHEELS_PER_CAT,
-				min: 1,
-				max: 128,
-				width: 6,
-			},
-			{
-				type: 'number',
-				id: 'num_group_labels',
-				label: 'Number of Group Labels',
-				default: constants.NUM_GROUP_LABELS,
-				min: 1,
-				max: 100,
-				width: 6,
-			},
-			{
-				type: 'number',
-				id: 'num_softkeys',
-				label: 'Number of Softkeys',
-				default: constants.NUM_SOFTKEYS,
-				min: 1,
-				max: 24,
-				width: 6,
-			},
-			{
-				type: 'number',
-				id: 'eos_port',
-				label: 'EOS Port',
-				default: constants.EOS_PORT,
-				min: 1,
-				max: 65535,
-				width: 6,
-			},
-			{
-				type: 'number',
-				id: 'eos_port_slip',
-				label: 'EOS Port SLIP',
-				default: constants.EOS_PORT_SLIP,
-				min: 1,
-				max: 65535,
-				width: 6,
-			},
-			{
-				type: 'number',
-				id: 'num_macro_labels',
-				label: 'Number of Macro Labels',
-				default: constants.NUM_MACRO_LABELS,
-				min: 1,
-				max: 1000,
-				width: 6,
-			},
-			{
-				type: 'number',
-				id: 'num_macro_start',
-				label: 'Macro Start Number',
-				default: constants.NUM_MACRO_START,
-				min: 1,
-				max: 99999,
-				width: 6,
-			},
-			/*
-			{
-				type: 'number',
-				id: 'eos_port',
-				label: 'EOS Port',
-				default: 3032,
-				min: 1,
-				max: 65535,
-				required: true,
-			},
-			{
-				type: 'checkbox',
-				id: 'use_slip',
-				label: 'Use TCP SLIP',
-				default: false,
-				required: true,
-			},
-			*/
-		]
+		return getConfigFields()
 	}
 
 	updateActions(): void {
@@ -281,716 +109,14 @@ class ModuleInstance extends InstanceBase<ModuleConfig> {
 	}
 
 	/**
-	 * Sets the connection state of this module to the Eos console.
-	 *
-	 * @param isConnected
-	 */
-	setConnectionState(isConnected: boolean): void {
-		let currentState = this.instanceState['connected']
-
-		this.updateStatus(isConnected ? InstanceStatus.Ok : InstanceStatus.Disconnected)
-		this.setInstanceStates({ connected: isConnected })
-
-		if (currentState !== isConnected) {
-			// The connection state changed. Update the feedback.
-			this.checkFeedbacks('connected')
-		}
-	}
-
-	/**
-	 * Closes the OSC socket.
-	 */
-	closeOscSocket(): void {
-		if (this.oscSocket !== undefined) {
-			this.oscSocket.close()
-
-			if (this.oscSocket.socket !== undefined) {
-				this.oscSocket.socket.destroy()
-				delete this.oscSocket.socket
-			}
-
-			delete this.oscSocket
-		}
-
-		this.emptyState()
-	}
-
-	/**
-	 * Watches for disconnects and reconnects to the console.
-	 * Automatically detects the correct port and SLIP setting by trying all combinations.
-	 */
-	startReconnectTimer(): void {
-		if (this.reconnectTimer !== undefined) {
-			// Timer is already running.
-			return
-		}
-
-		this.failedConnectionAttempts = 0
-		this.lastConnectionAttemptTime = 0
-
-		this.reconnectTimer = setInterval(() => {
-			if (!this.oscSocket || !this.oscSocket.socket) {
-				// Socket not valid, create new one
-				this.log('info', 'Socket invalid, creating new connection')
-				this.oscSocket = this.getOsc10Socket(this.config.host, this.eos_port)
-				this.setOscSocketListeners()
-				return
-			}
-
-			const socketState = this.oscSocket.socket.readyState
-
-			if (socketState === 'open') {
-				// Already connected. Nothing to do.
-				this.failedConnectionAttempts = 0
-				return
-			}
-
-			// Socket is not open (closed, closing, or connecting)
-			// Always create a new socket instead of trying to reuse
-			const now = Date.now()
-			if (now - this.lastConnectionAttemptTime > 5000) {
-				this.failedConnectionAttempts++
-				this.lastConnectionAttemptTime = now
-
-				// After 2 failed attempts (10 seconds), try next combination
-				if (this.failedConnectionAttempts >= 2) {
-					// Move to next mode in the list
-					this.currentModeIndex = (this.currentModeIndex + 1) % this.connectionModes.length
-					const nextMode = this.connectionModes[this.currentModeIndex]
-
-					this.log('info', `Connection failed, trying: ${nextMode.label}`)
-					this.use_slip = nextMode.useSlip
-					this.eos_port = nextMode.port
-					this.failedConnectionAttempts = 0
-				}
-
-				// Always close old socket and create new one
-				this.log('debug', `Attempting reconnect with: ${this.connectionModes[this.currentModeIndex].label}`)
-				this.closeOscSocket()
-				this.oscSocket = this.getOsc10Socket(this.config.host, this.eos_port)
-				this.setOscSocketListeners()
-			}
-		}, 5000)
-	}
-
-	/**
-	 * Updates the internal state of a variable within this module.
-	 *
-	 * Optionally updates the dynamic variable with its new value.
-	 */
-	setInstanceStates(values: Record<string, any>, isVariable?: boolean): void {
-		for (const [key, value] of Object.entries(values)) {
-			this.instanceState[key] = value
-		}
-
-		if (isVariable) {
-			this.setVariableValues(values)
-		}
-	}
-
-	/**
-	 * Returns the monkey-patched OSC connection to the console.
-	 */
-	getOsc10Socket(address: string | undefined, port: number): any {
-		let oscTcp = new OSC.TCPSocketPort({
-			address: address,
-			port: port,
-			useSLIP: this.use_slip,
-			metadata: true,
-		})
-
-		// Enable TCP keepalive to detect dead connections
-		if (oscTcp.socket) {
-			oscTcp.socket.setKeepAlive(true, 10000) // Send keepalive every 10 seconds
-		}
-
-		// Return the OSC 1.0 TCP connection.
-		return oscTcp
-	}
-
-	/**
-	 * Sets the listeners on the this.oscSocket object.
-	 *
-	 * Only needs to be done once, even if the socket reconnects.
-	 */
-	setOscSocketListeners(): void {
-		this.oscSocket.on('error', (err: Error) => {
-			if (this.instanceState['connected'] === true) {
-				// Only show errors if we're connected, otherwise we'll flood the debug log each time
-				//  the module tries to reconnect to the console.
-				this.log('error', `Error: ${err.message}`)
-			}
-		})
-
-		const cueActive = /^\/eos\/out\/active\/cue\/([\d\.]+)\/([\d\.]+)$/
-		const cueActiveText = '/eos/out/active/cue/text'
-		const cuePending = /^\/eos\/out\/pending\/cue\/([\d\.]+)\/([\d\.]+)$/
-		const cuePendingText = '/eos/out/pending/cue/text'
-		const cuePendingOut = '/eos/out/pending/cue'
-		const cuePrevious = /^\/eos\/out\/previous\/cue\/([\d\.]+)\/([\d\.]+)$/
-		const cuePreviousText = '/eos/out/previous/cue/text'
-		const cuePreviousOut = '/eos/out/previous/cue'
-		const showName = '/eos/out/show/name'
-		const version = '/eos/out/get/version'
-		const showLoaded = '/eos/out/event/show/loaded'
-		const showCleared = '/eos/out/event/show/cleared'
-		const softkey = /^\/eos\/out\/softkey\/(\d+)$/
-		const cmd = /^\/eos\/out\/user\/(\d+)\/cmd$/
-		const chan = '/eos/out/active/chan'
-		const groupUpdated = /^\/eos\/out\/notify\/group\/list\/([\d\.]+)\/([\d\.]+)$/
-		const groupLabel = /^\/eos\/out\/get\/group\/([\d\.]+)\/list\/([\d\.]+)\/([\d\.]+)$/
-		const groupNull = /^\/eos\/out\/get\/group\/([\d\.]+)$/
-		const colorhs = '/eos/out/color/hs'
-		const macroLabel = /^\/eos\/out\/get\/macro\/(\d+)\/list\/(\d+)\/(\d+)$/
-		const macroUpdated = /^\/eos\/out\/notify\/macro\/list\/([\d\.]+)\/([\d\.]+)$/
-		const macroFired = /^\/eos\/out\/event\/macro\/(\d+)$/
-
-		// Maybe for later
-		// const groupChannels = /^\/eos\/out\/get\/group\/([\d\.]+)\/channels\/list\/([\d\.]+)/([\d\.]+)$/
-
-		// This is the raw OSC message, but we are getting something parsed already...
-		// const enc_wheel      = /^\/eos\/out\/active\/wheel\/(\d+),\s*(\w+)\s*\[(\w+)\]\(s\).\s+(\d+)\(i\),\s*([\d.]*)\(f\)$/
-		const enc_wheel = /^\/eos\/out\/active\/wheel\/(\d+)/
-
-		this.oscSocket.on('message', (message: any, self: any) => {
-			// Update last message timestamp for heartbeat monitoring
-			this.lastMessageReceived = Date.now()
-
-			if (this.debugToLogger) {
-				this.log('debug', `Eos OSC message: ${message.address}`)
-				this.log('debug', `  Eos OSC message args: ${JSON.stringify(message.args)}`)
-			}
-
-			let matches
-
-			if ((matches = message.address.match(cueActive))) {
-				this.setInstanceStates(
-					{
-						cue_active_list: matches[1],
-						cue_active_num: matches[2],
-					},
-					true
-				)
-				this.checkFeedbacks('active_cue')
-			} else if (message.address === cueActiveText) {
-				this.parseCueName('active', message.args[0].value)
-			} else if ((matches = message.address.match(cuePending))) {
-				this.setInstanceStates(
-					{
-						cue_pending_list: matches[1],
-						cue_pending_num: matches[2],
-					},
-					true
-				)
-				this.checkFeedbacks('pending_cue')
-			} else if (message.address === cuePendingOut && message.args.length == 0) {
-				this.setInstanceStates(
-					{
-						cue_pending_list: '',
-						cue_pending_num: '',
-					},
-					true
-				)
-			} else if (message.address === cuePendingText) {
-				this.parseCueName('pending', message.args[0].value)
-			} else if ((matches = message.address.match(cuePrevious))) {
-				this.setInstanceStates(
-					{
-						cue_previous_list: matches[1],
-						cue_previous_num: matches[2],
-					},
-					true
-				)
-				this.checkFeedbacks('previous_cue')
-			} else if (message.address === cuePreviousOut && message.args.length == 0) {
-				this.setInstanceStates(
-					{
-						cue_previous_list: '',
-						cue_previous_num: '',
-					},
-					true
-				)
-			} else if (message.address === cuePreviousText) {
-				this.parseCueName('previous', message.args[0].value)
-			} else if (message.address === showName && message.args.length === 1 && message.args[0].type === 's') {
-				this.setInstanceStates(
-					{
-						show_name: message.args[0].value,
-					},
-					true
-				)
-			} else if (
-				message.address === version &&
-				message.args.length === 3 &&
-				message.args[0].type === 's' &&
-				message.args[1].type === 's' &&
-				message.args[2].type === 'i'
-			) {
-				this.setInstanceStates(
-					{
-						eos_version: message.args[0].value,
-						fixture_library_version: message.args[1].value,
-						gel_swatch_type: message.args[2].value,
-					},
-					true
-				)
-			} else if (message.address === version && message.args.length === 1 && message.args[0].type === 's') {
-				this.setInstanceStates(
-					{
-						eos_version: message.args[0].value,
-						fixture_library_version: '',
-						gel_swatch_type: '',
-					},
-					true
-				)
-			} else if (message.address === showLoaded || message.address === showCleared) {
-				// Reset the state when a show is loaded or a new show is created.
-				this.requestFullState()
-			} else if (
-				(matches = message.address.match(softkey)) &&
-				message.args.length === 1 &&
-				message.args[0].type === 's'
-			) {
-				this.setInstanceStates(
-					{
-						[`softkey_label_${matches[1]}`]: message.args[0].value,
-					},
-					true
-				)
-			} else if ((matches = message.address.match(cmd))) {
-				let userid = matches[1]
-				if (userid == this.config.user_id || this.config.user_id == '-1') {
-					this.setInstanceStates(
-						{
-							cmd: message.args[0].value,
-						},
-						true
-					)
-				}
-			} else if ((matches = message.address.match(chan))) {
-				// This may be a better place to reset our parameter data variables
-				let chantext = message.args[0].value
-				let chanarg_matches = chantext.match(/^(\d+)/)
-
-				if (chanarg_matches != null && chanarg_matches.length > 1) {
-					let actChan = chanarg_matches[1]
-					// if channel changed, we need to get full set of wheel data
-					if (actChan != this.lastActChan) {
-						this.emptyEncVariables()
-						this.requestFullState()
-						this.lastActChan = parseInt(actChan)
-					}
-				} else if (this.lastActChan != 0) {
-					// No channel active, clear out encoders, set lastActChan
-					// to zero so we don't keep looping on this. Initially set to -1
-					this.emptyEncVariables()
-					this.requestFullState()
-					this.lastActChan = 0
-				}
-			} else if ((matches = message.address.match(groupUpdated))) {
-				// A group was updated, request new title
-				// This is not the group number but the index number
-				let group_num = message.args[1].value
-				if (group_num <= this.howManyGroupLabels) {
-					this.sendOsc('/eos/get/group', [{ type: 'i', value: group_num }], false)
-				}
-			} else if ((matches = message.address.match(macroUpdated))) {
-				// A macro was updated, request new label
-				// Match the OSC address for macro updates
-				let macro_num = message.args[1].value
-				if (macro_num >= this.startMacro && macro_num <= this.howManyMacroLabels + this.startMacro) {
-					// Send a request to get the updated macro label with no arguments
-					this.sendOsc('/eos/get/macro', [{ type: 'i', value: macro_num }], false)
-				}
-			} else if ((matches = message.address.match(groupLabel))) {
-				let group_num = matches[1]
-				let group_label = message.args[2].value || ''
-				if (group_label) {
-					this.setInstanceStates(
-						{
-							[`group_label_${group_num}`]: message.args[2].value,
-						},
-						true
-					)
-				}
-			} else if ((matches = message.address.match(macroUpdated))) {
-				// A macro was updated, request new label
-				let macro_num = message.args[1].value
-				if (macro_num <= this.howManyMacroLabels) {
-					this.sendOsc('/eos/get/macro', [{ type: 'i', value: macro_num }], false)
-				}
-			} else if ((matches = message.address.match(macroLabel))) {
-				let macro_num = matches[1]
-				let macro_label = message.args[2].value || ''
-
-				if (macro_label) {
-					// Update the instance state with the new macro label
-					this.setInstanceStates(
-						{
-							[`macro_label_${macro_num}`]: message.args[2].value,
-						},
-						true
-					)
-				}
-			} else if ((matches = message.address.match(macroFired))) {
-				// Macro was fired/triggered
-				let macro_num = matches[1]
-				this.log('info', `Macro ${macro_num} fired!`)
-				this.setInstanceStates(
-					{
-						macro_fired: macro_num,
-					},
-					false
-				)
-				this.log('debug', `macro_fired state set to: ${macro_num}`)
-				this.checkFeedbacks('macro_fired')
-
-				// Clear the macro_fired state after 1 second
-				setTimeout(() => {
-					this.setInstanceStates(
-						{
-							macro_fired: null,
-						},
-						false
-					)
-					this.log('debug', `macro_fired state cleared`)
-					this.checkFeedbacks('macro_fired')
-				}, 1000)
-			} else if ((matches = message.address.match(groupNull))) {
-				let group_num = matches[1]
-				this.setInstanceStates(
-					{
-						[`group_label_${group_num}`]: '',
-					},
-					true
-				)
-			} else if (message.address === colorhs) {
-				// this.log('debug', `HS: ${hue} ${sat}`)
-				this.setInstanceStates(
-					{
-						hue: message.args[0].value.toFixed(3),
-						saturation: message.args[1].value.toFixed(3),
-						enc_hue_floatval: message.args[0].value.toFixed(3),
-						enc_hue_stringval: message.args[0].value.toFixed(3).toString(),
-						enc_saturation_floatval: message.args[1].value.toFixed(3),
-						enc_saturation_stringval: message.args[1].value.toFixed(3).toString(),
-						enc_saturationv2_floatval: message.args[1].value.toFixed(3),
-						enc_saturationv2_stringval: message.args[1].value.toFixed(3).toString(),
-					},
-					true
-				)
-			} else if ((matches = message.address.match(enc_wheel))) {
-				// set variables/state for wheel values
-				let wheel_num = matches[1]
-
-				if (wheel_num >= 1) {
-					// this.log('debug', '***** wheel message: ' + JSON.stringify(message))
-					let wheelTimer: NodeJS.Timeout
-					let wheel_label = message.args[0].value
-					let wheel_stringval = '0'
-					let wheel_cat = message.args[1].value || 0
-					let wheel_floatval: string | number = message.args[2].value
-					if (wheel_floatval != null) {
-						wheel_floatval = Number(wheel_floatval)
-						wheel_floatval = wheel_floatval.toFixed(3)
-					} else {
-						wheel_floatval = 0.0
-					}
-
-					let wmatches
-					wmatches = wheel_label.match(/^([^\[]*)\s*\[([^\]]*)\]/)
-					if (wmatches != null && wmatches.length == 3) {
-						wheel_label = wmatches[1].trimEnd()
-						wheel_stringval = wmatches[2]
-					}
-					// Update private wheel data
-					this.wheels[wheel_num].label = wheel_label
-					this.wheels[wheel_num].stringval = wheel_stringval
-					this.wheels[wheel_num].cat = wheel_cat
-					this.wheels[wheel_num].floatval = wheel_floatval
-					// Set individual wheel params we care about specifically
-					// as the wheel numbers can change.
-					let distinctparam = this.getDistinctParamForWheelLabel(wheel_label)
-					if (distinctparam != '') {
-						this.setInstanceStates(
-							{
-								[`${distinctparam}_stringval`]: wheel_stringval,
-								[`${distinctparam}_floatval`]: wheel_floatval,
-							},
-							true
-						)
-					}
-					// if we are not yet reading wheels, set flag to show we are,
-					// are set a timeout after 500ms (arbitrary) to process them
-					// into category sets. If we get a new one, clear and restart
-					// that timer. We don't know how many wheels, so this is a best
-					// guess way of knowing when to process them all into groups.
-					if (this.readingWheels == false) {
-						this.readingWheels = true
-						// property, intentionally no 'let'
-						let wheelTimer: any = undefined
-						wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
-					} else {
-						// cancel and restart timer waiting for next value
-						clearTimeout(wheelTimer)
-						// cancelTimeout( wheelTimer )
-						wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
-					}
-				}
-			}
-		})
-
-		this.oscSocket.open()
-
-		this.oscSocket.socket.on('close', (error: any) => {
-			this.log('info', 'Connection closed')
-			this.setConnectionState(false)
-		})
-
-		this.oscSocket.socket.on('error', (err: Error) => {
-			this.log('debug', `Socket error: ${err.message}`)
-			// Don't set disconnected here, let 'close' event handle it
-		})
-
-		this.oscSocket.socket.on('connect', () => {
-			// Enable TCP keepalive after connection
-			if (this.oscSocket && this.oscSocket.socket) {
-				this.oscSocket.socket.setKeepAlive(true, 10000)
-			}
-			this.log('info', 'Connection established')
-			this.lastMessageReceived = Date.now()
-			this.setConnectionState(true)
-			this.requestFullState()
-		})
-
-		// this.oscSocket.socket.on('ready', () => { })
-	}
-
-	/**
-	 * Start heartbeat monitoring to detect dead connections
-	 */
-	startHeartbeat(): void {
-		if (this.heartbeatInterval !== undefined) {
-			// Already running
-			return
-		}
-
-		this.heartbeatInterval = setInterval(() => {
-			if (!this.instanceState['connected']) {
-				// Not connected, nothing to check
-				return
-			}
-
-			const timeSinceLastMessage = Date.now() - this.lastMessageReceived
-
-			if (timeSinceLastMessage > this.heartbeatTimeout) {
-				// No messages received for too long, connection is probably dead
-				this.log('warn', `No messages received for ${timeSinceLastMessage}ms, connection appears dead`)
-				this.setConnectionState(false)
-
-				// Force socket close to trigger reconnect
-				if (this.oscSocket && this.oscSocket.socket) {
-					try {
-						this.oscSocket.socket.destroy()
-					} catch (e: any) {
-						this.log('debug', `Error destroying socket: ${e.message}`)
-					}
-				}
-			} else if (this.oscSocket && this.oscSocket.socket && this.oscSocket.socket.readyState === 'open') {
-				// Send a ping to keep connection alive and verify it works
-				// Eos will respond with /eos/out/ping
-				this.sendOsc('/eos/ping', [], false)
-			}
-		}, 15000) // Check every 15 seconds
-	}
-
-	/**
-	 * Assemble catXX_wheel_* variables after last wheel
-	 * parameter received.
-	 **/
-	doCategoryWheels(self: ModuleInstance): void {
-		let variableDefinitions = GetVariableDefinitions(self)
-		let updateDefs: Record<string, any> = {}
-		let catWheels: number[][] = []
-
-		// if we got here, we assume we are done with the batch of wheel info
-		self.readingWheels = false
-
-		self.wheels.forEach(function (wheelobj, index, arr, self) {
-			if (!catWheels[wheelobj.cat as any]) {
-				catWheels[wheelobj.cat as any] = []
-			}
-			catWheels[wheelobj.cat as any].push(index)
-		})
-		// Loop through categories 0-6
-		for (let i = 0; i <= 6; i++) {
-			// nothing in this category
-			if (!catWheels[i]) {
-				updateDefs[`wheel_cat${i}_count`] = 0
-			} else {
-				// for( let j=0; j < this.wheelsPerCategory; j++) {
-				for (let j = 0; j < Math.min(catWheels[i].length, self.wheelsPerCategory); j++) {
-					updateDefs[`cat${i}_wheel_${j + 1}_label`] = self.wheels[catWheels[i][j]].label
-					updateDefs[`cat${i}_wheel_${j + 1}_stringval`] = self.wheels[catWheels[i][j]].stringval
-					updateDefs[`cat${i}_wheel_${j + 1}_floatval`] = self.wheels[catWheels[i][j]].floatval
-					let eosCmd = self.wheels[catWheels[i][j]].label
-					if (eosCmd && eosCmd != '') {
-						eosCmd = eosCmd.replace(/ /g, '_').replace(/\//g, '\\')
-						eosCmd = eosCmd.toLowerCase()
-					} else {
-						eosCmd = ''
-					}
-					updateDefs[`cat${i}_wheel_${j + 1}_oscname`] = eosCmd
-				}
-				updateDefs[`cat${i}_wheel_count`] = catWheels[i].length
-			}
-		}
-		self.setVariableValues(updateDefs)
-	}
-
-	/**
-	 * Reset our internal variables
-	 */
-	emptyEncVariables(): void {
-		let variableDefinitions = GetVariableDefinitions(this)
-		let updateDefs: Record<string, any> = {}
-		variableDefinitions.forEach(function (varDef: any) {
-			if (
-				varDef['variableId'].startsWith('enc_') ||
-				// || varDef['variableId'].startsWith('wheel_') // deprecated
-				/^cat\d_/.test(varDef['variableId'])
-			) {
-				updateDefs[varDef['variableId']] = ''
-			}
-		}, this)
-		this.setVariableValues(updateDefs)
-		this.emptyWheelData()
-	}
-
-	/**
-	 * Empties the state (variables/feedbacks) and requests the current state from the console.
-	 */
-	requestFullState(): void {
-		this.emptyState()
-
-		// Request the current state of the console.
-		this.sendOsc('/eos/reset', [], false)
-
-		// Switch to the correct user_id.
-		this.sendOsc('/eos/user', [{ type: 'i', value: this.config.user_id }], false)
-
-		// Turn on subscription for show file event updates
-		this.sendOsc('/eos/subscribe', [{ type: 'i', value: 1 }], false)
-
-		// Get xx groups worth of labels - issue the request here to get the values,
-		// they are caught in the on.message elsewhere
-		for (let i = 1; i <= this.howManyGroupLabels; i++) {
-			// this.sendOsc('/eos/get/group/index', [ { type: 'i', value: i } ], false)
-			this.sendOsc('/eos/get/group', [{ type: 'i', value: i }], false)
-		}
-		// Get xx macros worth of labels - issue the request here to get the values,
-		// they are caught in the on.message elsewhere
-		for (let i = this.startMacro; i <= this.howManyMacroLabels + this.startMacro; i++) {
-			this.sendOsc('/eos/get/macro', [{ type: 'i', value: i }], false)
-		}
-	}
-
-	/**
-	 * Empties the state (variables/feedbacks).
-	 */
-	emptyState(): void {
-		// Empty the state, but preserve the connected state.
-		this.instanceState = {
-			connected: this.instanceState['connected'],
-		}
-
-		this.checkFeedbacks('pending_cue', 'active_cue', 'connected')
-	}
-
-	/**
-	 * Parses a cue's name (and the additional information within it) and updates the internal state.
-	 */
-	parseCueName(type: string, cueName: string): void {
-		// Cue name will look something like:
-		//  51.1 Drums 3.0 100%
-		//  <CUE NUMBER> <LABEL> <DURATION> [<INTENSITY PERCENTAGE>]
-		//
-		// or, if the cue doesn't have a label:
-		//  51.1 3.0 100%
-		//  <CUE NUMBER> <DURATION> [<INTENSITY PERCENTAGE>]
-		// let matches = cueName.match(/^(?<CUE_NUMBER>[\d\.]+)( (?<LABEL>.*?))? (?<DURATION>[\d\.]+)( (?<INTENSITY>[\d\.]+%))?$/)
-		//
-		// Fixed to accommodate CUE NUMBER of list/cue, as in 1/1.
-		//
-		// If the CUE value is " 0.0" then reset active cue list/number
-		const cuematch =
-			/^(?<CUE_NUMBER>[\d\.]+\/[\d\.]+|[\d\.]+)?(?<CUE_LIST>\/[\d\.]+)?( (?<LABEL>.*?))? (?<DURATION>[\d\.]+)( (?<INTENSITY>[\d\.]+%))?$/
-		let matches = cueName.match(cuematch)
-
-		if (matches !== null && matches.length >= 6) {
-			// Parse the response.
-			const newValues: Record<string, any> = {
-				[`cue_${type}_label`]: matches[3] || matches[2], // Use cue number if label not available.
-				[`cue_${type}_duration`]: matches[5],
-			}
-
-			if (matches.length === 8) {
-				newValues[`cue_${type}_intensity`] = matches[7]
-			}
-
-			this.setInstanceStates(newValues, true)
-		} else {
-			// Use as-is. Couldn't parse properly.
-			this.setInstanceStates(
-				{
-					[`cue_${type}_label`]: cueName,
-				},
-				true
-			)
-		}
-		// Clear out when active cue is no longer active
-		if ('active' == type && (' 0.0 ' == cueName.substring(0, 5) || '' == cueName)) {
-			this.setInstanceStates(
-				{
-					cue_active_list: '',
-					cue_active_num: '',
-				},
-				true
-			)
-			this.checkFeedbacks('active_cue')
-		}
-	}
-
-	/**
-	 * Sends the path to the OSC host.
-	 *
-	 * @param path          The OSC path to send
-	 * @param args          An array of arguments, or empty if no arguments needed
-	 * @param appendPrefix  Whether to append the '/eos/' prefix to the command.
+	 * Sends the path to the OSC host (delegates to OSCConnection)
 	 */
 	sendOsc(path: string, args: any[], appendPrefix: boolean): void {
-		if (!this.config.host) {
-			return
-		}
-
-		if (appendPrefix !== false) {
-			path = `/eos/${path}`
-		}
-
-		let packet = {
-			address: path,
-			args: args,
-		}
-
-		if (this.debugToLogger) {
-			this.log('info', `Eos: Sending packet: ${JSON.stringify(packet)}`)
-		}
-
-		this.oscSocket.send(packet)
+		this.oscConnection.sendOsc(path, args, appendPrefix)
 	}
 
-	/*
-	 * For actions
+	/**
+	 * For actions - Set intensity for channels/groups/subs
 	 */
 	setIntensity(prefix: string, id: string | number, value: string | number): void {
 		let suffix = ''
@@ -1010,17 +136,6 @@ class ModuleInstance extends InstanceBase<ModuleConfig> {
 		}
 
 		this.sendOsc(`${prefix}/${id}${suffix}`, arg, true)
-	}
-
-	getDistinctParamForWheelLabel(wheel_label: string): string {
-		let distinctparam = ''
-		if (wheel_label != null && wheel_label != '') {
-			let lc_wheel_label = wheel_label.toLowerCase()
-			if (lc_wheel_label in ParamMap) {
-				distinctparam = ParamMap[lc_wheel_label]
-			}
-		}
-		return distinctparam
 	}
 }
 
