@@ -3,6 +3,8 @@
 	"version": "2.1.1",
 	"main": "dist/main.js",
 	"scripts": {
+		"premodule-build": "yarn build",
+		"module-build": "companion-module-build",
 		"build": "yarn clean && tsc",
 		"clean": "rm -rf dist",
 		"dev": "tsc --watch",
