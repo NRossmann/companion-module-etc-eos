@@ -1,6 +1,6 @@
+import type { CompanionVariableDefinition } from '@companion-module/base'
 import * as constants from './constants.js'
 import { ParamMap } from './param_map.js'
-import type { CompanionVariableDefinition } from '@companion-module/base'
 
 export function GetVariableDefinitions(self: any): CompanionVariableDefinition[] {
 	let variableDefinitions: CompanionVariableDefinition[] = [

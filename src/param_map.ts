@@ -6,7 +6,6 @@
 //
 // NOTE: key is lower case
 //
-import * as constants from './constants.js'
 
 export const ParamMap: Record<string, string> = {
 	intens: 'enc_intensity',

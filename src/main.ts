@@ -1,11 +1,11 @@
-import { InstanceBase, Regex, runEntrypoint, InstanceStatus } from '@companion-module/base'
-import UpgradeScripts from './upgrades.js'
+import { InstanceBase, InstanceStatus, Regex, runEntrypoint } from '@companion-module/base'
 import UpdateActions from './actions.js'
-import UpdateFeedbacks from './feedbacks.js'
-import { GetVariableDefinitions, UpdateVariableDefinitions } from './variables.js'
-import UpdatePresetDefinitions from './presets.js'
-import { ParamMap } from './param_map.js'
 import * as constants from './constants.js'
+import UpdateFeedbacks from './feedbacks.js'
+import { ParamMap } from './param_map.js'
+import UpdatePresetDefinitions from './presets.js'
+import UpgradeScripts from './upgrades.js'
+import { GetVariableDefinitions, UpdateVariableDefinitions } from './variables.js'
 // @ts-ignore - no types available for osc
 import OSC from 'osc'
 
@@ -728,7 +728,8 @@ class ModuleInstance extends InstanceBase<ModuleConfig> {
 					if (this.readingWheels == false) {
 						this.readingWheels = true
 						// property, intentionally no 'let'
-						let wheelTimer: any = undefined; wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
+						let wheelTimer: any = undefined
+						wheelTimer = setTimeout(this.doCategoryWheels, 100, this)
 					} else {
 						// cancel and restart timer waiting for next value
 						clearTimeout(wheelTimer)
